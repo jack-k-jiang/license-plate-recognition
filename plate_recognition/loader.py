@@ -29,6 +29,15 @@ def load_frame_annotations(category: str, video_id: str) -> dict[int, dict]:
 
     return frames
 
+def normalize_plate_text(text: str) -> str:
+    """Keeps only 0-9A-Z, uppercased: fast-plate-ocr's alphabet has neither
+    Chinese characters nor punctuation like licNumber's "-" separator, so
+    anything else can never be matched and shouldn't be compared. Used on
+    both ground truth (here) and predicted text (in the accuracy harness) so
+    both sides of a comparison go through the exact same normalization."""
+    return re.sub(r'[^0-9A-Za-z]', '', text).upper()
+
+
 def denormalize(points: list[tuple[float, float]], width: int, height: int) -> list[tuple[int, int]]:
     """Convert LSV-LP's [0,1]-normalized points to pixel coordinates for one frame."""
     denormalized = []
@@ -80,11 +89,7 @@ def build_ground_truth_tracks(category: str, video_id: str) -> dict[str, dict]:
             if "#" in licNumber:
                 continue
 
-            # Keep only 0-9A-Z: fast-plate-ocr's alphabet has neither Chinese
-            # characters nor punctuation like the "-" separator in licNumber,
-            # so anything else can never be matched and shouldn't be compared.
-            cleanedNum = re.sub(r'[^0-9A-Za-z]', '', licNumber).upper()
-            entry["readings"].append(cleanedNum)
+            entry["readings"].append(normalize_plate_text(licNumber))
 
     ground_truth = {}
     for carId, entry in tracks.items():

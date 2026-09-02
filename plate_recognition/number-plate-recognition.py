@@ -7,6 +7,8 @@ from fast_plate_ocr import LicensePlateRecognizer
 from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
+from perspective import rectify_plate
+
 # Minimum mean per-character confidence for a reading to be trusted enough to vote.
 MIN_OCR_CONFIDENCE = 0.4
 # How many of the most recent readings per tracked plate to keep for the majority vote.
@@ -31,7 +33,7 @@ class LPR:
         plate_history (dict[int, Counter]): Recent OCR readings per tracked plate ID.
     """
 
-    def __init__(self, model_path: str = "yolo26n.pt", imgsz: int = 960):
+    def __init__(self, model_path: str = "yolo26n.pt", imgsz: int = 960, reader: LicensePlateRecognizer = None):
         """Initializes the LPR system
 
         imgsz: resolution YOLO internally resizes frames to before detecting. The ultralytics
@@ -40,11 +42,16 @@ class LPR:
             middle ground between that recall and inference cost; raise it further (matching
             infer_video's max_width, e.g. 1280) if distant plates still aren't showing up, at
             the cost of speed.
+        reader: an existing LicensePlateRecognizer to reuse instead of loading a new one. For
+            a single LPR instance this doesn't matter, but multiple LPR instances that want to
+            pool OCR calls together (e.g. one instance per concurrent stream, batching crops
+            from all of them into shared reader.run() calls) need to share one reader rather
+            than each loading and holding its own copy of the model.
         """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = YOLO(model_path)
         self.imgsz = imgsz
-        self.reader = LicensePlateRecognizer("cct-s-v2-global-model", device=self.device.type)
+        self.reader = reader or LicensePlateRecognizer("cct-s-v2-global-model", device=self.device.type)
         self.plate_history: dict[int, Counter] = defaultdict(Counter)
 
     def detect_plates(self, im0: np.ndarray):
@@ -54,7 +61,7 @@ class LPR:
            im0: image
            np.ndarray: N-dimensional array
         """
-        results = self.model.track(im0, persist=True, verbose=False, imgsz=self.imgsz)
+        results = self.model.track(im0, persist=True, verbose=False, imgsz=self.imgsz, device=self.device.type)
         if not results or results[0].boxes is None:
             return [], []
         boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -62,25 +69,59 @@ class LPR:
         track_ids = track_ids.int().cpu().numpy() if track_ids is not None else [None] * len(boxes)
         return boxes, track_ids
 
+    @staticmethod
+    def crop_plate(im0: np.ndarray, bbox: np.ndarray):
+        """Crops the plate region out of a frame and converts it to the RGB fast-plate-ocr
+        expects. Returns None if the box didn't produce a usable crop (e.g. clipped to zero
+        size by a resize). Split out from extract_text so callers that want to batch OCR
+        calls across multiple crops (rather than one reader.run() per crop) can do the
+        cropping here and the batched reader.run() call themselves."""
+        x1, y1, x2, y2 = map(int, bbox)
+        roi = im0[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None
+        return cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+
+    def _read(self, rgb: np.ndarray):
+        """Runs OCR on a single crop. Returns (text, confidence)."""
+        predictions = self.reader.run(rgb, return_confidence=True)
+        if not predictions:
+            return "", 0.0
+        pred = predictions[0]
+        confidence = float(pred.char_probs.mean()) if pred.char_probs is not None else 0.0
+        return pred.plate.strip(), confidence
+
     def extract_text(self, im0: np.ndarray, bbox: np.ndarray):
-        """Performs OCR on the cropped license plate region.
+        """Performs OCR on the cropped license plate region, trying perspective
+        correction and keeping whichever reading is actually more confident.
+
+        Why not just always use the corrected crop: measured on real data, classical
+        contour-based correction only finds a confident quadrilateral ~8% of the time,
+        and when it does, it improved OCR confidence in fewer cases than it hurt it
+        (7 improved vs. 14 worsened out of 39, in one real test run) - a geometrically
+        plausible quadrilateral isn't always the *right* one, and warping to a wrong
+        one can distort the text worse than leaving it alone. Rather than trust the
+        geometry blindly, this runs OCR on both the original and corrected crop and
+        keeps whichever one the OCR model itself is more confident about - strictly
+        improve-or-neutral instead of a coin flip, at the cost of a second OCR call
+        (cheap - OCR is ~7-10ms/crop, far less than detection).
 
         Returns (text, confidence), where confidence is the mean per-character probability
         (0.0 if the model doesn't report one, e.g. no plate was decoded).
         """
-        x1, y1, x2, y2 = map(int, bbox)
-        roi = im0[y1:y2, x1:x2]
-        if roi.size == 0:
+        rgb = self.crop_plate(im0, bbox)
+        if rgb is None:
             return "", 0.0
 
-        rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-        predictions = self.reader.run(rgb, return_confidence=True)
-        if not predictions:
-            return "", 0.0
+        text, confidence = self._read(rgb)
 
-        pred = predictions[0]
-        confidence = float(pred.char_probs.mean()) if pred.char_probs is not None else 0.0
-        return pred.plate.strip(), confidence
+        rectified = rectify_plate(rgb)
+        if rectified is not rgb:  # rectify_plate returns the same object when it couldn't correct
+            rect_text, rect_confidence = self._read(rectified)
+            if rect_confidence > confidence:
+                text, confidence = rect_text, rect_confidence
+
+        return text, confidence
 
     def stabilize_text(self, track_id, text: str, confidence: float):
         """Smooths a plate's OCR reading over time using a per-track majority vote.
