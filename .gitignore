@@ -2,3 +2,7 @@
 __pycache__/
 .DS_Store
 *.mp4
+# Third-party licensed datasets (research-use-only) — never commit these.
+datasets/
+test/
+archive/
