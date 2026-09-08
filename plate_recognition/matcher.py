@@ -1,4 +1,4 @@
-
+# IoU = Intersection over Union - Evaluation metric
 
 
 def compute_iou(box_a: tuple, box_b: tuple) -> float:
