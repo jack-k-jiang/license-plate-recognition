@@ -1,4 +1,6 @@
 .venv/
+ROADMAP.md
+LSV-LP.pdf
 __pycache__/
 .DS_Store
 *.mp4
