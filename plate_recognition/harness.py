@@ -165,3 +165,7 @@ def run_full_evaluation(
         "stable_accuracy": stable_accuracy,
         "all_scored": all_scored,
     }
+
+
+if __name__ == "__main__":
+    run_full_evaluation("lpr_best.pt")
