@@ -18,7 +18,7 @@ LPR = _module["LPR"]
 
 
 def process_video(model_path: str, source, cap_backend=None, max_frames: int = None):
-    """Runs full per-frame detection+OCR across one video with a *fresh*
+    """Runs full per-frame detection+OCR across one video with a new
     LPR instance (so track IDs and vote history never leak between videos).
 
     Returns:
@@ -33,6 +33,7 @@ def process_video(model_path: str, source, cap_backend=None, max_frames: int = N
       total_frames: frames actually read.
     """
     lpr = LPR(model_path=model_path)
+
     cap = cv2.VideoCapture(source, cap_backend) if cap_backend is not None else cv2.VideoCapture(source)
 
     # {track_id: {frame_num: box}} - matcher.py's match_predicted_to_ground_truth
@@ -83,6 +84,9 @@ def process_video(model_path: str, source, cap_backend=None, max_frames: int = N
 def evaluate_lsvlp_video(model_path: str, category: str, video_id: str):
     """Runs one LSV-LP video and scores it against its own ground truth."""
     source = f"../test/videos/{category}/{video_id}/frame%d.jpg"
+
+    # cv2.CAP_IMAGES tells OpenCv to treat the path as a sequence of images 
+    # with sequential numbering for the files
     predicted_boxes, raw_text_by_track, stable_text_by_track, total_frames = process_video(
         model_path, source, cap_backend=cv2.CAP_IMAGES
     )
@@ -168,4 +172,9 @@ def run_full_evaluation(
 
 
 if __name__ == "__main__":
-    run_full_evaluation("lpr_best.pt")
+    results = run_full_evaluation("lpr_best.pt")
+
+    print(f"\nscored_trakcs={results['scored_tracks']} "
+          f"raw_accuracy={results['raw_accuracy']:.1%} "
+          f"stable_accuracy={results['stable_accuracy']:.1%}"
+          )

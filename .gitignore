@@ -8,3 +8,6 @@ __pycache__/
 datasets/
 test/
 archive/
+*.zip
+*.tar
+*.tar.gz

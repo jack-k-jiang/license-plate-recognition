@@ -15,6 +15,14 @@ license plate detection.
 
 ## Project Structure
 
+## Glossary
+track - 
+raw_text - OCR result from a single frame
+stable_text - per-track majority vote across many frames
+
+
 ## Results
 
 ## License
+
+
